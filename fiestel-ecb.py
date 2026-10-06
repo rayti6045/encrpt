@@ -1,5 +1,11 @@
+# Educational block cipher: 128-bit Feistel network with AES S-box, ECB mode,
+# PKCS#7 padding, Base64 output. See README.md for further explanation
+
 import base64
 
+# AES S-box: 256-entry substitution table (bijection on bytes).
+# https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.197-upd1.pdf - FIPS 197 Sec. 5.1.1: official AES S-box table
+# https://en.wikipedia.org/wiki/Rijndael_S-box - how the S-box is constructed (GF(2^8) inverse + affine transform)
 S_BOX = [
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
     0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -36,6 +42,8 @@ def permute_half(data):
     return data[3:] + data[:3]
 
 
+# Feistel round function: key XOR -> S-box -> byte permutation.
+# https://en.wikipedia.org/wiki/Feistel_cipher - round function F in a Feistel network
 def F(half, subkey):
     x = xor_bytes(half, subkey)
     x = substitute(x)
@@ -43,6 +51,9 @@ def F(half, subkey):
     return x
 
 
+# Key schedule: custom design, built from the AES key expansion ideas
+# (byte rotation, S-box substitution, XOR with a round constant).
+# https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.197-upd1.pdf - FIPS 197 Sec. 5.2: AES key expansion
 def generate_round_keys(key):
     keys = []
     current = xor_bytes(key[:HALF], key[HALF:])
@@ -55,6 +66,9 @@ def generate_round_keys(key):
     return keys
 
 
+# Feistel network on one block: L, R = R, L xor F(R, K_i); halves swapped at the end.
+# https://en.wikipedia.org/wiki/Feistel_cipher - Feistel network construction
+# https://cacr.uwaterloo.ca/hac/about/chap7.pdf - Handbook of Applied Cryptography, Ch. 7 Sec. 7.4.1: Feistel ciphers
 def encrypt_block(block, round_keys):
     L, R = block[:HALF], block[HALF:]
     for i in range(ROUNDS):
@@ -63,6 +77,7 @@ def encrypt_block(block, round_keys):
     return R + L
 
 
+# Decryption: same Feistel network with the round keys in reverse order.
 def decrypt_block(block, round_keys):
     A, B = block[:HALF], block[HALF:]
     for i in reversed(range(ROUNDS)):
@@ -71,6 +86,8 @@ def decrypt_block(block, round_keys):
     return B + A
 
 
+# PKCS#7 padding.
+# https://datatracker.ietf.org/doc/html/rfc5652#section-6.3 - RFC 5652 Sec. 6.3: PKCS#7 padding rule
 def pad(data):
     amount = 16 - len(data) % 16
     return data + bytes([amount]) * amount
@@ -85,6 +102,11 @@ def unpad(data):
     return data[:-amount]
 
 
+# ECB mode: every 16-byte block is encrypted independently with the same key.
+# https://csrc.nist.gov/pubs/sp/800/38/a/final - NIST SP 800-38A Sec. 6.1: ECB mode definition
+# https://en.wikipedia.org/wiki/Block_cipher_mode_of_operation#Electronic_codebook_(ECB) - ECB explained
+# Ciphertext is Base64-encoded for text output.
+# https://datatracker.ietf.org/doc/html/rfc4648#section-4 - RFC 4648 Sec. 4: Base64
 def encrypt_message(message, key):
     round_keys = generate_round_keys(key)
     message = pad(message)
