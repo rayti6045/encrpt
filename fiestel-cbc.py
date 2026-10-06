@@ -1,0 +1,189 @@
+# Educational block cipher: 128-bit Feistel network with AES S-box, CBC mode,
+# PKCS#7 padding, Base64 output. Algorithm descriptions: see README_CBC.md
+
+import base64
+import os
+
+# AES S-box: 256-entry substitution table (bijection on bytes).
+# https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.197-upd1.pdf - FIPS 197 Sec. 5.1.1: official AES S-box table
+# https://en.wikipedia.org/wiki/Rijndael_S-box - how the S-box is constructed (GF(2^8) inverse + affine transform)
+S_BOX = [
+    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
+]
+
+ROUNDS = 12
+BLOCK_SIZE = 16
+HALF = 8
+
+
+def xor_bytes(a, b):
+    return bytes(x ^ y for x, y in zip(a, b))
+
+
+def substitute(data):
+    return bytes(S_BOX[x] for x in data)
+
+
+def permute_half(data):
+    return data[3:] + data[:3]
+
+
+# Feistel round function: key XOR -> S-box -> byte permutation.
+# https://en.wikipedia.org/wiki/Feistel_cipher - round function F in a Feistel network
+def F(half, subkey):
+    x = xor_bytes(half, subkey)
+    x = substitute(x)
+    x = permute_half(x)
+    return x
+
+
+# Key schedule: custom design, built from the AES key expansion ideas
+# (byte rotation, S-box substitution, XOR with a round constant).
+# https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.197-upd1.pdf - FIPS 197 Sec. 5.2: AES key expansion
+def generate_round_keys(key):
+    keys = []
+    current = xor_bytes(key[:HALF], key[HALF:])
+    for round_number in range(1, ROUNDS + 1):
+        rotated = current[1:] + current[:1]
+        transformed = bytearray(substitute(rotated))
+        transformed[0] ^= round_number
+        current = bytes(transformed)
+        keys.append(current)
+    return keys
+
+
+# Feistel network on one block: L, R = R, L xor F(R, K_i); halves swapped at the end.
+# https://en.wikipedia.org/wiki/Feistel_cipher - Feistel network construction
+# https://cacr.uwaterloo.ca/hac/about/chap7.pdf - Handbook of Applied Cryptography, Ch. 7 Sec. 7.4.1: Feistel ciphers
+def encrypt_block(block, round_keys):
+    L, R = block[:HALF], block[HALF:]
+    for i in range(ROUNDS):
+        subkey = round_keys[i]
+        L, R = R, xor_bytes(L, F(R, subkey))
+    return R + L
+
+
+# Decryption: same Feistel network with the round keys in reverse order.
+def decrypt_block(block, round_keys):
+    A, B = block[:HALF], block[HALF:]
+    for i in reversed(range(ROUNDS)):
+        subkey = round_keys[i]
+        A, B = B, xor_bytes(A, F(B, subkey))
+    return B + A
+
+
+# PKCS#7 padding.
+# https://datatracker.ietf.org/doc/html/rfc5652#section-6.3 - RFC 5652 Sec. 6.3: PKCS#7 padding rule
+def pad(data):
+    amount = 16 - len(data) % 16
+    return data + bytes([amount]) * amount
+
+
+def unpad(data):
+    amount = data[-1]
+    if amount < 1 or amount > 16:
+        raise ValueError("Invalid padding")
+    if data[-amount:] != bytes([amount]) * amount:
+        raise ValueError("Invalid padding")
+    return data[:-amount]
+
+
+# CBC mode: each plaintext block is XORed with the previous ciphertext block
+# before encryption (C_i = E_K(P_i xor C_{i-1})); the first block uses the IV as C_0.
+# https://csrc.nist.gov/pubs/sp/800/38/a/final - NIST SP 800-38A Sec. 6.2: CBC mode definition
+# https://en.wikipedia.org/wiki/Block_cipher_mode_of_operation#Cipher_block_chaining_(CBC) - CBC explained
+# The IV is a fresh random 16-byte value per message (not secret), sent in front of the ciphertext.
+# https://docs.python.org/3/library/os.html#os.urandom - OS cryptographic random bytes used for the IV
+# Output = Base64(IV + ciphertext).
+# https://datatracker.ietf.org/doc/html/rfc4648#section-4 - RFC 4648 Sec. 4: Base64
+def encrypt_message(message, key):
+    round_keys = generate_round_keys(key)
+    message = pad(message)
+    iv = os.urandom(BLOCK_SIZE)
+    encrypted = bytearray()
+    previous = iv
+
+    for i in range(0, len(message), 16):
+        block = message[i:i + 16]
+        block = encrypt_block(xor_bytes(block, previous), round_keys)
+        encrypted.extend(block)
+        previous = block
+
+    return base64.b64encode(iv + bytes(encrypted)).decode()
+
+
+# CBC decryption: P_i = D_K(C_i) xor C_{i-1}, with C_0 = IV (first 16 bytes of the input).
+def decrypt_message(encoded_message, key):
+    raw = base64.b64decode(encoded_message)
+    if len(raw) < 2 * BLOCK_SIZE or len(raw) % BLOCK_SIZE != 0:
+        raise ValueError("Invalid ciphertext length")
+    iv, raw = raw[:BLOCK_SIZE], raw[BLOCK_SIZE:]
+    round_keys = generate_round_keys(key)
+    decrypted = bytearray()
+    previous = iv
+
+    for i in range(0, len(raw), 16):
+        block = raw[i:i + 16]
+        decrypted_block = xor_bytes(decrypt_block(block, round_keys), previous)
+        decrypted.extend(decrypted_block)
+        previous = block
+
+    return unpad(bytes(decrypted)).decode()
+
+
+def get_key():
+    while True:
+        key = input("Enter a 16-character key: ").encode()
+        if len(key) == 16:
+            return key
+        print("The key must contain exactly 16 ASCII characters.")
+
+
+def main():
+    while True:
+        print("\n1. Encrypt")
+        print("2. Decrypt")
+        print("3. Exit")
+        choice = input("Choose an option: ")
+
+        if choice == "1":
+            key = get_key()
+            message = input("Enter plaintext: ").encode()
+            result = encrypt_message(message, key)
+            print("\nEncrypted text:")
+            print(result)
+
+        elif choice == "2":
+            key = get_key()
+            encrypted = input("Enter encrypted text: ")
+            try:
+                result = decrypt_message(encrypted, key)
+                print("\nDecrypted text:")
+                print(result)
+            except Exception:
+                print("Decryption failed.")
+
+        elif choice == "3":
+            break
+
+        else:
+            print("Invalid option.")
+
+
+if __name__ == "__main__":
+    main()
