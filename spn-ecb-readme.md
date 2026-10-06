@@ -1,8 +1,3 @@
-# Toy SPN cipher in ECB mode
-
-This README explains the algorithms the program is built from (not the code line by line).
-The cipher is a **teaching demo**: 128-bit block, 128-bit key, 10 rounds. It is not secure and must not protect real data.
-
 ## 1. Substitution-permutation network (SPN)
 
 An SPN is a design for block ciphers. The plaintext block goes through several **rounds**, and every round does three things:
